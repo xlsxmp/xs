@@ -112,7 +112,11 @@ EOF
 systemctl restart xray
 systemctl status -l xray
 
+# 输出节点信息，并保存到 /root/node.txt
+node="vless://$uuid@$domainName:443?encryption=none&security=tls&type=ws&host=$domainName&path=/ray#xray_ws_tls"
 echo
 echo "=== 部署完成 ==="
 echo "VLESS 节点信息："
-echo "vless://$uuid@$domainName:443?encryption=none&security=tls&type=ws&host=$domainName&path=/ray#xray_ws_tls"
+echo "$node"
+echo "$node" > /root/node.txt
+echo "节点信息已保存到 /root/node.txt"
