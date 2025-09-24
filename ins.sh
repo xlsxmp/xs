@@ -1,6 +1,6 @@
 #!/bin/bash
 # Auth: happylife
-# Desc: Xray VLESS+WS+TLS + Nginx + Cloudflare CDN 自动部署 (交互式版本)
+# Desc: Xray VLESS+WS+TLS + Nginx + Cloudflare CDN 自动部署 (Debian 12 修正版)
 # Plat: Debian 12 / Ubuntu 20.04+
 
 echo "=== Xray VLESS+WS+TLS + Cloudflare CDN 自动部署 ==="
@@ -12,26 +12,22 @@ if [ -z "$domainName" ]; then
     exit 1
 fi
 
-# 随机端口 & UUID
-xrayPort=$(shuf -i 20000-49000 -n 1)
-fallbacksPort=$(shuf -i 50000-65000 -n 1)
-uuid=$(uuidgen)
-
-echo "域名: $domainName"
-echo "UUID: $uuid"
-echo "Xray 端口: $xrayPort"
-echo "回落端口: $fallbacksPort"
-
-sleep 2
-
 # 设置时区
 ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime
 
 # 安装依赖
 apt update
-apt install -y curl pwgen openssl netcat cron socat nginx
+apt install -y curl pwgen openssl netcat cron socat nginx uuid-runtime
 systemctl enable nginx
 systemctl start nginx
+
+# 生成随机端口和 UUID
+xrayPort=$(shuf -i 20000-49000 -n 1)
+fallbacksPort=$(shuf -i 50000-65000 -n 1)
+uuid=$(uuidgen)
+echo "生成 UUID: $uuid"
+
+sleep 1
 
 # 安装 Xray
 bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install -u root
@@ -63,9 +59,7 @@ systemctl restart nginx
 # Xray 配置
 cat > /usr/local/etc/xray/config.json <<EOF
 {
-  "log": {
-    "loglevel": "warning"
-  },
+  "log": { "loglevel": "warning" },
   "inbounds": [
     {
       "port": $xrayPort,
@@ -89,30 +83,22 @@ cat > /usr/local/etc/xray/config.json <<EOF
         "security": "tls",
         "tlsSettings": {
           "certificates": [
-            {
-              "certificateFile": "$ssl_dir/xray.crt",
-              "keyFile": "$ssl_dir/xray.key"
-            }
+            { "certificateFile": "$ssl_dir/xray.crt", "keyFile": "$ssl_dir/xray.key" }
           ]
         },
-        "wsSettings": {
-          "path": "/ray"
-        }
+        "wsSettings": { "path": "/ray" }
       }
     }
   ],
-  "outbounds": [
-    {
-      "protocol": "freedom"
-    }
-  ]
+  "outbounds": [ { "protocol": "freedom" } ]
 }
 EOF
 
+# 重启服务
 systemctl restart xray
 systemctl status -l xray
 
-# 输出节点信息，并保存到 /root/node.txt
+# 输出节点信息并保存
 node="vless://$uuid@$domainName:443?encryption=none&security=tls&type=ws&host=$domainName&path=/ray#xray_ws_tls"
 echo
 echo "=== 部署完成 ==="
