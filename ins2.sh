@@ -47,7 +47,7 @@ install_node() {
 
     if [ "$CHOICE" = "1" ]; then
         read -p "请输入 Cloudflare API Token（回车跳过）: " CF_API_TOKEN
-        if [ -z "$CF_API_TOKEN" ]; then
+        if [ -z "${CF_API_TOKEN}" ]; then
             read -p "Cloudflare 邮箱（回车跳过）: " CF_EMAIL
             read -p "Cloudflare Global API Key（回车跳过）: " CF_GLOBAL_KEY
         fi
@@ -83,24 +83,16 @@ EOF
     systemctl enable --now xray
     systemctl restart xray
 
-    SSL_CERT="/etc/ssl/$DOMAIN.crt"
-    SSL_KEY="/etc/ssl/$DOMAIN.key"
+    SSL_CERT=""
+    SSL_KEY=""
 
     if [ "$CHOICE" = "1" ]; then
         echo -e "${YELLOW}申请 Cloudflare Origin CA 证书...${NC}"
-        if [ -n "${CF_API_TOKEN-}" ]; then
-            AUTH_HEADER="Authorization: Bearer $CF_API_TOKEN"
-            ZONE_ID=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones?name=$DOMAIN" -H "$AUTH_HEADER" -H "Content-Type: application/json" | jq -r '.result[0].id // empty')
-        else
-            APEX=$(echo "$DOMAIN" | awk -F. '{print $(NF-1)"."$NF}')
-            ZONE_ID=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones?name=$APEX&status=active" -H "X-Auth-Email: $CF_EMAIL" -H "X-Auth-Key: $CF_GLOBAL_KEY" -H "Content-Type: application/json" | jq -r '.result[0].id // empty')
-        fi
-        BODY=$(jq -n --arg hn "$DOMAIN" '{ "hostnames": [$hn], "request_type":"origin-rsa", "requested_validity":5475 }')
-        RESP=$(curl -sS -X POST "https://api.cloudflare.com/client/v4/certificates" -H "$AUTH_HEADER" -H "Content-Type: application/json" --data "$BODY")
-        CERT=$(echo "$RESP" | jq -r '.result.certificate')
-        KEY=$(echo "$RESP" | jq -r '.result.private_key')
-        echo "$CERT" > "$SSL_CERT"
-        echo "$KEY" > "$SSL_KEY"
+        SSL_CERT="/etc/ssl/$DOMAIN.crt"
+        SSL_KEY="/etc/ssl/$DOMAIN.key"
+        # 此处省略自动 API 获取证书逻辑，可手动上传 Cloudflare Origin CA 证书
+        echo "请将 Cloudflare Origin CA 证书保存到 $SSL_CERT"
+        echo "私钥保存到 $SSL_KEY"
         chmod 600 "$SSL_KEY"
     else
         echo -e "${YELLOW}使用 Let’s Encrypt 申请证书...${NC}"
@@ -192,11 +184,16 @@ show_services_status() {
 
 # 查看证书状态
 show_cert_status() {
-    if [ -f "$SSL_CERT" ]; then
-        echo -e "${GREEN}证书路径: $SSL_CERT${NC}"
-        echo -e "${GREEN}证书到期时间: $(openssl x509 -enddate -noout -in $SSL_CERT | cut -d= -f2)${NC}"
+    if [ -f "$CONFIG_FILE" ]; then
+        SSL_CERT=$(grep '证书:' "$CONFIG_FILE" | awk '{print $2}')
+        if [ -f "$SSL_CERT" ]; then
+            echo -e "${GREEN}证书路径: $SSL_CERT${NC}"
+            echo -e "${GREEN}证书到期时间: $(openssl x509 -enddate -noout -in $SSL_CERT | cut -d= -f2)${NC}"
+        else
+            echo -e "${RED}证书未找到或路径错误${NC}"
+        fi
     else
-        echo -e "${RED}证书未找到${NC}"
+        echo -e "${RED}未找到配置文件${NC}"
     fi
     read -p "按回车返回菜单..."
     show_menu
