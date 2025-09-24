@@ -12,7 +12,7 @@ if [ -z "$domainName" ]; then
     exit 1
 fi
 
-# 随机端口
+# 随机端口 & UUID
 xrayPort=$(shuf -i 20000-49000 -n 1)
 fallbacksPort=$(shuf -i 50000-65000 -n 1)
 uuid=$(uuidgen)
@@ -29,7 +29,7 @@ ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime
 
 # 安装依赖
 apt update
-apt install curl pwgen openssl netcat cron socat nginx -y
+apt install -y curl pwgen openssl netcat cron socat nginx
 systemctl enable nginx
 systemctl start nginx
 
@@ -112,6 +112,7 @@ EOF
 systemctl restart xray
 systemctl status -l xray
 
+echo
 echo "=== 部署完成 ==="
 echo "VLESS 节点信息："
 echo "vless://$uuid@$domainName:443?encryption=none&security=tls&type=ws&host=$domainName&path=/ray#xray_ws_tls"
