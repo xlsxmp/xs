@@ -1,2 +1,1 @@
-sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/xlsxmp/xs/refs/heads/main/vless_manager.sh && \
-cp /root/vless_manager.sh /usr/local/bin/vless && chmod +x /usr/local/bin/vless)"
+sudo bash -c 'curl -o /usr/local/bin/vless_manager.sh "https://raw.githubusercontent.com/xlsxmp/xs/refs/heads/main/vless_manager.sh" && chmod +x /usr/local/bin/vless_manager.sh && ln -sf /usr/local/bin/vless_manager.sh /usr/local/bin/vwt'
