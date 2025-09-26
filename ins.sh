@@ -1,198 +1,195 @@
-#!/usr/bin/env bash
-# install_vless_auto.sh
-# Debian 12 适用：一键安装 Xray(VLESS+WS) + nginx 反代 + TLS (Let’s Encrypt 或 Cloudflare Origin CA)
-set -euo pipefail
-IFS=$'\n\t'
+#!/bin/bash
 
-# 颜色
-RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'; NC='\033[0m'
+# 颜色定义
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+NC='\033[0m' # 无颜色
 
-# 必须 root
-if [ "$(id -u)" -ne 0 ]; then
-  echo -e "${RED}请以 root 运行脚本（sudo）${NC}" && exit 1
+# 检查是否为 root 用户
+if [ "$(id -u)" != "0" ]; then
+    echo -e "${RED}此脚本需要 root 权限运行，请使用 sudo 或切换到 root 用户！${NC}"
+    exit 1
 fi
 
-# 检查系统为 Debian 12（宽松判断）
-if ! grep -q "VERSION_ID=\"12\"" /etc/os-release; then
-  echo -e "${YELLOW}警告：检测到非 Debian 12 系统，脚本在其它系统上可能不完全兼容。继续请按 Y。${NC}"
-  read -p "继续？ (y/N): " ok
-  case "$ok" in [yY]) ;; *) echo "退出"; exit 1 ;; esac
+# 检查系统是否为 Debian 12
+if ! grep -q "Debian GNU/Linux 12" /etc/os-release; then
+    echo -e "${RED}此脚本仅支持 Debian 12 系统！${NC}"
+    exit 1
 fi
 
-echo -e "${YELLOW}=== VLESS+WS+TLS 一键安装（含 Cloudflare Origin CA 自动申请）===${NC}"
+# 交互式输入
+echo -e "${YELLOW}=== VLESS + WebSocket + TLS + Cloudflare CDN 搭建脚本 ===${NC}"
+read -p "请输入您的域名（例如 example.com）: " DOMAIN
+if [ -z "$DOMAIN" ]; then
+    echo -e "${RED}域名不能为空！${NC}"
+    exit 1
+fi
 
-read -p "请输入域名（例如 vps.example.com）: " DOMAIN
-if [ -z "$DOMAIN" ]; then echo -e "${RED}域名不能为空${NC}"; exit 1; fi
-
-read -p "请输入 WebSocket 路径（默认 /ws ）: " WS_PATH
+read -p "请输入 WebSocket 路径（默认 /ws）： " WS_PATH
 WS_PATH=${WS_PATH:-/ws}
-if [[ "${WS_PATH:0:1}" != "/" ]]; then WS_PATH="/$WS_PATH"; fi
 
-read -p "请输入 UUID（回车自动生成）: " UUID
-if [ -z "$UUID" ]; then UUID=$(cat /proc/sys/kernel/random/uuid); echo -e "${GREEN}已生成 UUID: $UUID${NC}"; fi
-
-echo "证书方式:"
-echo "  1) Cloudflare Origin CA（自动通过 Cloudflare API 生成并安装）"
-echo "  2) Let’s Encrypt (certbot, http 验证)"
-read -p "请选择 (1/2, 默认1): " CHOICE
-CHOICE=${CHOICE:-1}
-
-read -p "若要使用 Cloudflare API，请输入 CF API Token（回车跳过）: " CF_API_TOKEN
-if [ -z "$CF_API_TOKEN" ]; then
-  read -p "若无 Token，可输入 Cloudflare 邮箱 (回车跳过) : " CF_EMAIL
-  read -p "请输入 Cloudflare Global API Key (回车跳过) : " CF_GLOBAL_KEY
+read -p "请输入 UUID（留空将自动生成）： " UUID
+if [ -z "$UUID" ]; then
+    UUID=$(cat /proc/sys/kernel/random/uuid)
+    echo -e "${GREEN}已自动生成 UUID: $UUID${NC}"
 fi
 
-# 更新安装依赖
-echo -e "${YELLOW}更新系统并安装依赖...${NC}"
-apt update -y
-apt install -y curl wget unzip nginx jq ca-certificates socat python3 python3-pip
+read -p "请输入 Cloudflare API 密钥（可选，留空跳过）： " CF_API_KEY
+read -p "请输入 Cloudflare 账户邮箱（可选，留空跳过）： " CF_EMAIL
 
-# 安装 certbot 与 dns 插件（按需）
-if [ "$CHOICE" = "2" ]; then
-  apt install -y snapd
-  snap install core && snap refresh core
-  snap install --classic certbot || true
-  ln -sf /snap/bin/certbot /usr/bin/certbot
-fi
-apt install -y python3-certbot-dns-cloudflare || true
+# 更新系统并安装依赖
+echo -e "${YELLOW}正在更新系统并安装依赖...${NC}"
+apt update && apt upgrade -y
+apt install -y curl wget unzip nginx certbot python3-certbot-nginx jq
 
 # 安装 Xray
-echo -e "${YELLOW}安装 Xray...${NC}"
-bash <(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh) install || {
-  echo -e "${RED}Xray 安装失败${NC}"; exit 1;
-}
+echo -e "${YELLOW}正在安装 Xray...${NC}"
+bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
+if [ $? -ne 0 ]; then
+    echo -e "${RED}Xray 安装失败！请检查网络或手动安装。${NC}"
+    exit 1
+fi
 
-# HIDEPATH 设置
-HIDEPATH="$WS_PATH"
-
-# 写入 Xray 配置
-XRAY_CONF="/usr/local/etc/xray/config.json"
-mkdir -p "$(dirname "$XRAY_CONF")"
-cat > "$XRAY_CONF" <<EOF
+# 配置 Xray
+echo -e "${YELLOW}正在配置 Xray...${NC}"
+cat > /usr/local/etc/xray/config.json << EOF
 {
-  "log": { "access": "/var/log/xray/access.log", "error": "/var/log/xray/error.log", "loglevel": "warning" },
+  "log": {
+    "loglevel": "warning"
+  },
   "inbounds": [
     {
       "port": 10000,
-      "listen": "127.0.0.1",
       "protocol": "vless",
-      "settings": { "clients": [ { "id": "$UUID", "level": 0 } ], "decryption": "none" },
-      "streamSettings": { "network": "ws", "wsSettings": { "path": "$HIDEPATH" } }
+      "settings": {
+        "clients": [
+          {
+            "id": "$UUID",
+            "level": 0
+          }
+        ],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "ws",
+        "wsSettings": {
+          "path": "$WS_PATH"
+        }
+      }
     }
   ],
-  "outbounds": [ { "protocol": "freedom" } ]
+  "outbounds": [
+    {
+      "protocol": "freedom"
+    }
+  ]
 }
 EOF
 
-systemctl enable --now xray || true
-systemctl restart xray || true
+# 启动 Xray
+systemctl enable xray
+systemctl restart xray
+if [ $? -ne 0 ]; then
+    echo -e "${RED}Xray 启动失败！请检查配置文件。${NC}"
+    exit 1
+fi
+echo -e "${GREEN}Xray 配置完成并启动成功！${NC}"
 
-# 证书
-SSL_CERT="/etc/ssl/$DOMAIN.crt"
-SSL_KEY="/etc/ssl/$DOMAIN.key"
-
-if [ "$CHOICE" = "1" ]; then
-  echo -e "${YELLOW}通过 Cloudflare API 申请 Origin CA 证书...${NC}"
-  if [ -n "${CF_API_TOKEN-}" ]; then
-    AUTH_HEADER="Authorization: Bearer $CF_API_TOKEN"
-    ZONE_ID=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones?name=$DOMAIN&status=active" -H "$AUTH_HEADER" -H "Content-Type: application/json" | jq -r '.result[0].id // empty')
-  else
-    APEX=$(echo "$DOMAIN" | awk -F. '{print $(NF-1)"."$NF}')
-    ZONE_ID=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones?name=$APEX&status=active" -H "X-Auth-Email: $CF_EMAIL" -H "X-Auth-Key: $CF_GLOBAL_KEY" -H "Content-Type: application/json" | jq -r '.result[0].id // empty')
-  fi
-
-  BODY=$(jq -n --arg hn "$DOMAIN" '{ "hostnames": [$hn], "request_type":"origin-rsa", "requested_validity":5475 }')
-  if [ -n "${CF_API_TOKEN-}" ]; then
-    RESP=$(curl -sS -X POST "https://api.cloudflare.com/client/v4/certificates" -H "$AUTH_HEADER" -H "Content-Type: application/json" --data "$BODY")
-  else
-    RESP=$(curl -sS -X POST "https://api.cloudflare.com/client/v4/certificates" -H "X-Auth-Email: $CF_EMAIL" -H "X-Auth-Key: $CF_GLOBAL_KEY" -H "Content-Type: application/json" --data "$BODY")
-  fi
-  CERT=$(echo "$RESP" | jq -r '.result.certificate')
-  KEY=$(echo "$RESP" | jq -r '.result.private_key')
-  echo "$CERT" > "$SSL_CERT"
-  echo "$KEY" > "$SSL_KEY"
-  chmod 600 "$SSL_KEY"
+# 申请 TLS 证书
+echo -e "${YELLOW}正在申请 Let’s Encrypt TLS 证书...${NC}"
+if [ -n "$CF_API_KEY" ] && [ -n "$CF_EMAIL" ]; then
+    certbot certonly --dns-cloudflare --dns-cloudflare-credentials <(echo -e "dns_cloudflare_email = $CF_EMAIL\ndns_cloudflare_api_key = $CF_API_KEY") -d $DOMAIN --email admin@$DOMAIN --agree-tos --non-interactive
 else
-  echo -e "${YELLOW}使用 Let’s Encrypt 申请证书...${NC}"
-  apt install -y python3-certbot-nginx
-  certbot -n --nginx -d "$DOMAIN" --agree-tos --email "admin@$DOMAIN"
-  SSL_CERT="/etc/letsencrypt/live/$DOMAIN/fullchain.pem"
-  SSL_KEY="/etc/letsencrypt/live/$DOMAIN/privkey.pem"
+    certbot certonly --nginx -d $DOMAIN --email admin@$DOMAIN --agree-tos --non-interactive
 fi
 
-# 生成伪装页面
-WWW="/var/www/html"
-mkdir -p "$WWW"
-cat > "$WWW/index.html" <<HTML
-<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Welcome</title></head>
-<body style="font-family:Arial,Helvetica,sans-serif;padding:40px;">
-<h1>Welcome to $DOMAIN</h1><p>This is a static page.</p></body></html>
-HTML
-chown -R www-data:www-data "$WWW"
-chmod -R 755 "$WWW"
+if [ $? -ne 0 ]; then
+    echo -e "${RED}TLS 证书申请失败！请检查域名解析或 Cloudflare 配置。${NC}"
+    exit 1
+fi
+echo -e "${GREEN}TLS 证书申请成功！${NC}"
 
-# Nginx 配置
-NGX_CONF="/etc/nginx/sites-available/$DOMAIN"
-cat > "$NGX_CONF" <<NGX
+# 配置 Nginx 反向代理
+echo -e "${YELLOW}正在配置 Nginx 反向代理...${NC}"
+cat > /etc/nginx/sites-available/vless << EOF
 server {
     listen 80;
     server_name $DOMAIN;
-    location /.well-known/acme-challenge/ { root $WWW; }
-    location / { return 301 https://\$host\$request_uri; }
+    return 301 https://\$server_name\$request_uri;
 }
 
 server {
-    listen 443 ssl http2;
+    listen 443 ssl;
     server_name $DOMAIN;
 
-    ssl_certificate $SSL_CERT;
-    ssl_certificate_key $SSL_KEY;
+    ssl_certificate /etc/letsencrypt/live/$DOMAIN/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/$DOMAIN/privkey.pem;
     ssl_protocols TLSv1.2 TLSv1.3;
-    ssl_session_cache shared:SSL:10m;
-    ssl_session_timeout 10m;
-    server_tokens off;
+    ssl_ciphers HIGH:!aNULL:!MD5;
 
-    root $WWW;
-    index index.html;
-
-    location $HIDEPATH {
-        proxy_redirect off;
+    location $WS_PATH {
         proxy_pass http://127.0.0.1:10000;
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection "upgrade";
         proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_buffering off;
     }
 
-    location / { try_files \$uri \$uri/ =404; }
-    location ~ /\. { deny all; access_log off; log_not_found off; }
+    location / {
+        root /var/www/html;
+        index index.html;
+    }
 }
-NGX
-
-ln -sf "$NGX_CONF" /etc/nginx/sites-enabled/"$DOMAIN"
-nginx -t
-systemctl restart nginx || { echo -e "${RED}nginx 启动失败${NC}"; exit 1; }
-
-# URL encode HIDEPATH
-HIDEPATH_ESCAPED=$(python3 -c "import urllib.parse; print(urllib.parse.quote('$HIDEPATH', safe=''))")
-VLESS_URI="vless://${UUID}@${DOMAIN}:443?encryption=none&security=tls&sni=${DOMAIN}&type=ws&host=${DOMAIN}&path=${HIDEPATH_ESCAPED}#${DOMAIN}"
-
-cat > /root/vless-config.txt <<EOF
-域名: $DOMAIN
-UUID: $UUID
-WebSocket 路径: $HIDEPATH
-证书: $SSL_CERT
-私钥: $SSL_KEY
-
-客户端链接:
-$VLESS_URI
 EOF
 
-echo -e "${GREEN}安装完成！配置信息已保存到 /root/vless-config.txt${NC}"
-echo "---- 客户端链接 ----"
-echo "$VLESS_URI"
-echo "---- 结束 ----"
+# 启用 Nginx 配置
+ln -sf /etc/nginx/sites-available/vless /etc/nginx/sites-enabled/
+nginx -t
+if [ $? -ne 0 ]; then
+    echo -e "${RED}Nginx 配置测试失败！请检查配置文件。${NC}"
+    exit 1
+fi
+
+systemctl restart nginx
+echo -e "${GREEN}Nginx 配置完成并重启成功！${NC}"
+
+# 配置 Cloudflare CDN
+echo -e "${YELLOW}正在配置 Cloudflare CDN...${NC}"
+if [ -n "$CF_API_KEY" ] && [ -n "$CF_EMAIL" ]; then
+    # 获取 Cloudflare 区域 ID
+    ZONE_ID=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones?name=$DOMAIN" \
+        -H "X-Auth-Email: $CF_EMAIL" \
+        -H "X-Auth-Key: $CF_API_KEY" \
+        -H "Content-Type: application/json" | jq -r '.result[0].id')
+
+    if [ -z "$ZONE_ID" ]; then
+        echo -e "${RED}无法获取 Cloudflare 区域 ID！请检查 API 密钥或域名。${NC}"
+    else
+        # 设置 DNS 记录
+        curl -s -X POST "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/dns_records" \
+            -H "X-Auth-Email: $CF_EMAIL" \
+            -H "X-Auth-Key: $CF_API_KEY" \
+            -H "Content-Type: application/json" \
+            --data "{\"type\":\"A\",\"name\":\"$DOMAIN\",\"content\":\"$(curl -s ifconfig.me)\",\"ttl\":1,\"proxied\":true}" > /dev/null
+        echo -e "${GREEN}Cloudflare CDN 配置完成！${NC}"
+    fi
+else
+    echo -e "${YELLOW}未提供 Cloudflare API 密钥，跳过 CDN 配置。确保已在 Cloudflare 手动配置 CDN！${NC}"
+fi
+
+# 输出配置信息
+echo -e "${GREEN}=== 搭建完成！以下是您的配置信息 ===${NC}"
+echo "域名: $DOMAIN"
+echo "UUID: $UUID"
+echo "WebSocket 路径: $WS_PATH"
+echo "TLS: Enabled (Let’s Encrypt)"
+echo "Nginx 反向代理: 端口 443"
+echo "Cloudflare CDN: $([ -n "$CF_API_KEY" ] && echo "Enabled" || echo "Manual configuration required")"
+echo -e "${YELLOW}请在客户端配置 VLESS + WebSocket + TLS，并确保 Cloudflare 的 SSL/TLS 设置为 'Full (strict)'。${NC}"
+echo -e "${GREEN}客户端配置示例:${NC}"
+echo "vless://$UUID@$DOMAIN:443?security=tls&type=ws&path=$WS_PATH#VLESS-WS-TLS"
+
+# 保存配置信息到文件
+echo -e "域名: $DOMAIN\nUUID: $UUID\nWebSocket 路径: $WS_PATH\nTLS: Enabled\nNginx 反向代理: 端口 443\nCloudflare CDN: $([ -n "$CF_API_KEY" ] && echo "Enabled" || echo "Manual configuration required")\n\n客户端配置:\nvless://$UUID@$DOMAIN:443?security=tls&type=ws&path=$WS_PATH#VLESS-WS-TLS" > /root/vless-config.txt
+echo -e "${GREEN}配置信息已保存到 /root/vless-config.txt${NC}"
