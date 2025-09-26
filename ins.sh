@@ -141,7 +141,10 @@ if [ "$CHOICE" = "1" ]; then
     echo -e "${RED}无法获取 Cloudflare ZONE_ID，请检查域名或 API 凭据${NC}"
     exit 1
   fi
-  BODY=$(jq -n --arg hn "$DOMAIN" '{ "hostnames": [$hn], "request_type":"origin-rsa", "requested_validity":5475 }')
+  BODY=$(jq -n --arg hn "$DOMAIN" '{ "hostnames": [$hn], "request_type":"origin-rsa", "requested_validity":5475 }' || {
+    echo -e "${RED}jq 命令生成 JSON 失败，请检查 jq 安装或语法${NC}"
+    exit 1
+  })
   if [ -n "${CF_API_TOKEN-}" ]; then
     RESP=$(curl -sS -X POST "https://api.cloudflare.com/client/v4/certificates" -H "$AUTH_HEADER" -H "Content-Type: application/json" --data "$BODY")
   else
@@ -205,7 +208,7 @@ server {
     index index.html;
 
     location $HIDEPATH {
-        proxy_redirect off Vinegar
+        proxy_redirect off;
         proxy_pass http://127.0.0.1:10000;
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
@@ -226,7 +229,10 @@ nginx -t || { echo -e "${RED}nginx 配置测试失败${NC}"; exit 1; }
 systemctl restart nginx || { echo -e "${RED}nginx 启动失败${NC}"; exit 1; }
 
 # URL encode HIDEPATH
-HIDEPATH_ESCAPED=$(python3 -c "import urllib.parse; print(urllib.parse.quote('$HIDEPATH', safe=''))")
+HIDEPATH_ESCAPED=$(python3 -c "import urllib.parse; print(urllib.parse.quote('$HIDEPATH', safe=''))" || {
+  echo -e "${RED}URL 编码失败，请检查 Python3 安装${NC}"
+  exit 1
+})
 VLESS_URI="vless://${UUID}@${DOMAIN}:443?encryption=none&security=tls&sni=${DOMAIN}&type=ws&host=${DOMAIN}&path=${HIDEPATH_ESCAPED}#${DOMAIN}"
 
 cat > /root/vless-config.txt <<EOF
