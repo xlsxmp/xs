@@ -23,7 +23,15 @@ echo -e "${YELLOW}=== VLESS+WS+TLS 一键安装（含 Cloudflare Origin CA 自�
 
 # 用户输入
 read -p "请输入域名（例如 vps.example.com）: " DOMAIN
-if [ -z "$DOMAIN" ]; then echo -e "${RED}域名不能为空${NC}"; exit 1; fi
+if [ -z "$DOMAIN" ]; then
+  echo -e "${RED}域名不能为空${NC}"
+  exit 1
+fi
+# 验证域名格式（简单检查，不含特殊字符）
+if ! echo "$DOMAIN" | grep -qE '^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'; then
+  echo -e "${RED}无效的域名格式，请输入有效域名（例如 vps.example.com）${NC}"
+  exit 1
+fi
 
 read -p "请输入 WebSocket 路径（默认 /ws ）: " WS_PATH
 WS_PATH=${WS_PATH:-/ws}
@@ -48,6 +56,12 @@ fi
 echo -e "${YELLOW}更新系统并安装依赖...${NC}"
 apt update -y
 apt install -y curl wget unzip nginx jq ca-certificates socat python3 python3-pip
+
+# 验证 jq 安装
+if ! command -v jq >/dev/null 2>&1; then
+  echo -e "${RED}jq 未安装，请检查 apt 安装${NC}"
+  exit 1
+fi
 
 # 安装 certbot 与 nginx 插件（仅在选择 Let’s Encrypt 时）
 if [ "$CHOICE" = "2" ]; then
@@ -141,17 +155,25 @@ if [ "$CHOICE" = "1" ]; then
     echo -e "${RED}无法获取 Cloudflare ZONE_ID，请检查域名或 API 凭据${NC}"
     exit 1
   fi
-  BODY=$(jq -n --arg hn "$DOMAIN" '{ "hostnames": [$hn], "request_type":"origin-rsa", "requested_validity":5475 }' || {
-    echo -e "${RED}jq 命令生成 JSON 失败，请检查 jq 安装或语法${NC}"
+  BODY=$(jq -n --arg hn "$DOMAIN" '{ "hostnames": [$hn], "request_type":"origin-rsa", "requested_validity":5475 }' 2>/dev/null) || {
+    echo -e "${RED}jq 命令生成 JSON 失败，请检查域名或 jq 安装${NC}"
     exit 1
-  })
-  if [ -n "${CF_API_TOKEN-}" ]; then
-    RESP=$(curl -sS -X POST "https://api.cloudflare.com/client/v4/certificates" -H "$AUTH_HEADER" -H "Content-Type: application/json" --data "$BODY")
-  else
-    RESP=$(curl -sS -X POST "https://api.cloudflare.com/client/v4/certificates" -H "X-Auth-Email: $CF_EMAIL" -H "X-Auth-Key: $CF_GLOBAL_KEY" -H "Content-Type: application/json" --data "$BODY")
+  }
+  if [ -z "$BODY" ]; then
+    echo -e "${RED}生成的 JSON 为空，请检查域名内容${NC}"
+    exit 1
   fi
-  CERT=$(echo "$RESP" | jq -r '.result.certificate')
-  KEY=$(echo "$RESP" | jq -r '.result.private_key')
+  if [ -n "${CF_API_TOKEN-}" ]; then
+    RESP=$(curl -sS -X POST "https://api.cloudflare.com/client/v4/certificates" -H "$AUTH_HEADER" -H "Content-Type: application/json" --data "$BODY" 2>/dev/null)
+  else
+    RESP=$(curl -sS -X POST "https://api.cloudflare.com/client/v4/certificates" -H "X-Auth-Email: $CF_EMAIL" -H "X-Auth-Key: $CF_GLOBAL_KEY" -H "Content-Type: application/json" --data "$BODY" 2>/dev/null)
+  fi
+  if ! echo "$RESP" | jq -e . >/dev/null 2>&1; then
+    echo -e "${RED}Cloudflare API 返回无效 JSON，请检查网络或 API 凭据${NC}"
+    exit 1
+  fi
+  CERT=$(echo "$RESP" | jq -r '.result.certificate // empty')
+  KEY=$(echo "$RESP" | jq -r '.result.private_key // empty')
   if [ -z "$CERT" ] || [ -z "$KEY" ]; then
     echo -e "${RED}Cloudflare 证书申请失败，请检查 API 凭据或网络${NC}"
     exit 1
