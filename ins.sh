@@ -1,198 +1,189 @@
 #!/usr/bin/env bash
-# install_vless_auto.sh
-# Debian 12 适用：一键安装 Xray(VLESS+WS) + nginx 反代 + TLS (Let’s Encrypt 或 Cloudflare Origin CA)
+# VLESS+WS+TLS 一键管理脚本
+# Debian 12 专用，集成 Cloudflare/Let’s Encrypt 证书、Nginx 修复、BBR 加速
+
 set -euo pipefail
 IFS=$'\n\t'
 
-# 颜色
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'; NC='\033[0m'
 
-# 必须 root
-if [ "$(id -u)" -ne 0 ]; then
-  echo -e "${RED}请以 root 运行脚本（sudo）${NC}" && exit 1
-fi
+CONFIG_FILE="/root/vless-config.txt"
+XRAY_CONF="/usr/local/etc/xray/config.json"
+WWW="/var/www/html"
 
-# 检查系统为 Debian 12（宽松判断）
-if ! grep -q "VERSION_ID=\"12\"" /etc/os-release; then
-  echo -e "${YELLOW}警告：检测到非 Debian 12 系统，脚本在其它系统上可能不完全兼容。继续请按 Y。${NC}"
-  read -p "继续？ (y/N): " ok
-  case "$ok" in [yY]) ;; *) echo "退出"; exit 1 ;; esac
-fi
-
-echo -e "${YELLOW}=== VLESS+WS+TLS 一键安装（含 Cloudflare Origin CA 自动申请）===${NC}"
-
-read -p "请输入域名（例如 vps.example.com）: " DOMAIN
-if [ -z "$DOMAIN" ]; then echo -e "${RED}域名不能为空${NC}"; exit 1; fi
-
-read -p "请输入 WebSocket 路径（默认 /ws ）: " WS_PATH
-WS_PATH=${WS_PATH:-/ws}
-if [[ "${WS_PATH:0:1}" != "/" ]]; then WS_PATH="/$WS_PATH"; fi
-
-read -p "请输入 UUID（回车自动生成）: " UUID
-if [ -z "$UUID" ]; then UUID=$(cat /proc/sys/kernel/random/uuid); echo -e "${GREEN}已生成 UUID: $UUID${NC}"; fi
-
-echo "证书方式:"
-echo "  1) Cloudflare Origin CA（自动通过 Cloudflare API 生成并安装）"
-echo "  2) Let’s Encrypt (certbot, http 验证)"
-read -p "请选择 (1/2, 默认1): " CHOICE
-CHOICE=${CHOICE:-1}
-
-read -p "若要使用 Cloudflare API，请输入 CF API Token（回车跳过）: " CF_API_TOKEN
-if [ -z "$CF_API_TOKEN" ]; then
-  read -p "若无 Token，可输入 Cloudflare 邮箱 (回车跳过) : " CF_EMAIL
-  read -p "请输入 Cloudflare Global API Key (回车跳过) : " CF_GLOBAL_KEY
-fi
-
-# 更新安装依赖
-echo -e "${YELLOW}更新系统并安装依赖...${NC}"
-apt update -y
-apt install -y curl wget unzip nginx jq ca-certificates socat python3 python3-pip
-
-# 安装 certbot 与 dns 插件（按需）
-if [ "$CHOICE" = "2" ]; then
-  apt install -y snapd
-  snap install core && snap refresh core
-  snap install --classic certbot || true
-  ln -sf /snap/bin/certbot /usr/bin/certbot
-fi
-apt install -y python3-certbot-dns-cloudflare || true
-
-# 安装 Xray
-echo -e "${YELLOW}安装 Xray...${NC}"
-bash <(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh) install || {
-  echo -e "${RED}Xray 安装失败${NC}"; exit 1;
+fix_nginx() {
+  echo -e "${YELLOW}检查 Nginx...${NC}"
+  if [ ! -f /etc/nginx/nginx.conf ]; then
+    echo -e "${RED}未找到 /etc/nginx/nginx.conf，正在重新安装 Nginx${NC}"
+    apt purge -y nginx nginx-core nginx-common nginx-full || true
+    rm -rf /etc/nginx
+    apt update
+    apt install -y nginx
+  fi
 }
 
-# HIDEPATH 设置
-HIDEPATH="$WS_PATH"
+install_node() {
+  read -p "请输入域名: " DOMAIN
+  [ -z "$DOMAIN" ] && { echo -e "${RED}域名不能为空${NC}"; exit 1; }
 
-# 写入 Xray 配置
-XRAY_CONF="/usr/local/etc/xray/config.json"
-mkdir -p "$(dirname "$XRAY_CONF")"
-cat > "$XRAY_CONF" <<EOF
+  read -p "请输入 WebSocket 路径 (默认 /ws): " WS_PATH
+  WS_PATH=${WS_PATH:-/ws}; [[ "${WS_PATH:0:1}" != "/" ]] && WS_PATH="/$WS_PATH"
+
+  read -p "请输入 UUID (回车自动生成): " UUID
+  [ -z "$UUID" ] && UUID=$(cat /proc/sys/kernel/random/uuid)
+
+  echo "选择证书方式:"
+  echo " 1) Cloudflare Origin CA"
+  echo " 2) Let’s Encrypt"
+  read -p "请选择 (1/2 默认1): " CHOICE
+  CHOICE=${CHOICE:-1}
+
+  apt update -y
+  apt install -y curl wget unzip jq ca-certificates socat python3 python3-pip nginx
+
+  # 安装 Xray
+  bash <(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh) install
+
+  # Xray 配置
+  mkdir -p "$(dirname "$XRAY_CONF")"
+  cat > "$XRAY_CONF" <<EOF
 {
-  "log": { "access": "/var/log/xray/access.log", "error": "/var/log/xray/error.log", "loglevel": "warning" },
   "inbounds": [
     {
       "port": 10000,
       "listen": "127.0.0.1",
       "protocol": "vless",
       "settings": { "clients": [ { "id": "$UUID", "level": 0 } ], "decryption": "none" },
-      "streamSettings": { "network": "ws", "wsSettings": { "path": "$HIDEPATH" } }
+      "streamSettings": { "network": "ws", "wsSettings": { "path": "$WS_PATH" } }
     }
   ],
   "outbounds": [ { "protocol": "freedom" } ]
 }
 EOF
+  systemctl enable --now xray
 
-systemctl enable --now xray || true
-systemctl restart xray || true
-
-# 证书
-SSL_CERT="/etc/ssl/$DOMAIN.crt"
-SSL_KEY="/etc/ssl/$DOMAIN.key"
-
-if [ "$CHOICE" = "1" ]; then
-  echo -e "${YELLOW}通过 Cloudflare API 申请 Origin CA 证书...${NC}"
-  if [ -n "${CF_API_TOKEN-}" ]; then
-    AUTH_HEADER="Authorization: Bearer $CF_API_TOKEN"
-    ZONE_ID=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones?name=$DOMAIN&status=active" -H "$AUTH_HEADER" -H "Content-Type: application/json" | jq -r '.result[0].id // empty')
+  # 证书
+  SSL_CERT="/etc/ssl/$DOMAIN.crt"
+  SSL_KEY="/etc/ssl/$DOMAIN.key"
+  if [ "$CHOICE" = "2" ]; then
+    apt install -y snapd
+    snap install core; snap refresh core
+    snap install --classic certbot || true
+    ln -sf /snap/bin/certbot /usr/bin/certbot
+    apt install -y python3-certbot-nginx
+    certbot -n --nginx -d "$DOMAIN" --agree-tos --email "admin@$DOMAIN"
+    SSL_CERT="/etc/letsencrypt/live/$DOMAIN/fullchain.pem"
+    SSL_KEY="/etc/letsencrypt/live/$DOMAIN/privkey.pem"
   else
-    APEX=$(echo "$DOMAIN" | awk -F. '{print $(NF-1)"."$NF}')
-    ZONE_ID=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones?name=$APEX&status=active" -H "X-Auth-Email: $CF_EMAIL" -H "X-Auth-Key: $CF_GLOBAL_KEY" -H "Content-Type: application/json" | jq -r '.result[0].id // empty')
+    echo -e "${YELLOW}请在脚本中配置 Cloudflare API 来申请 Origin CA${NC}"
+    exit 1
   fi
 
-  BODY=$(jq -n --arg hn "$DOMAIN" '{ "hostnames": [$hn], "request_type":"origin-rsa", "requested_validity":5475 }')
-  if [ -n "${CF_API_TOKEN-}" ]; then
-    RESP=$(curl -sS -X POST "https://api.cloudflare.com/client/v4/certificates" -H "$AUTH_HEADER" -H "Content-Type: application/json" --data "$BODY")
-  else
-    RESP=$(curl -sS -X POST "https://api.cloudflare.com/client/v4/certificates" -H "X-Auth-Email: $CF_EMAIL" -H "X-Auth-Key: $CF_GLOBAL_KEY" -H "Content-Type: application/json" --data "$BODY")
-  fi
-  CERT=$(echo "$RESP" | jq -r '.result.certificate')
-  KEY=$(echo "$RESP" | jq -r '.result.private_key')
-  echo "$CERT" > "$SSL_CERT"
-  echo "$KEY" > "$SSL_KEY"
-  chmod 600 "$SSL_KEY"
-else
-  echo -e "${YELLOW}使用 Let’s Encrypt 申请证书...${NC}"
-  apt install -y python3-certbot-nginx
-  certbot -n --nginx -d "$DOMAIN" --agree-tos --email "admin@$DOMAIN"
-  SSL_CERT="/etc/letsencrypt/live/$DOMAIN/fullchain.pem"
-  SSL_KEY="/etc/letsencrypt/live/$DOMAIN/privkey.pem"
-fi
+  # 伪装页面
+  mkdir -p "$WWW"
+  echo "<h1>Welcome to $DOMAIN</h1>" > "$WWW/index.html"
 
-# 生成伪装页面
-WWW="/var/www/html"
-mkdir -p "$WWW"
-cat > "$WWW/index.html" <<HTML
-<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Welcome</title></head>
-<body style="font-family:Arial,Helvetica,sans-serif;padding:40px;">
-<h1>Welcome to $DOMAIN</h1><p>This is a static page.</p></body></html>
-HTML
-chown -R www-data:www-data "$WWW"
-chmod -R 755 "$WWW"
-
-# Nginx 配置
-NGX_CONF="/etc/nginx/sites-available/$DOMAIN"
-cat > "$NGX_CONF" <<NGX
+  # Nginx 配置
+  fix_nginx
+  NGX_CONF="/etc/nginx/sites-available/$DOMAIN"
+  cat > "$NGX_CONF" <<NGX
 server {
     listen 80;
     server_name $DOMAIN;
     location /.well-known/acme-challenge/ { root $WWW; }
     location / { return 301 https://\$host\$request_uri; }
 }
-
 server {
     listen 443 ssl http2;
     server_name $DOMAIN;
-
     ssl_certificate $SSL_CERT;
     ssl_certificate_key $SSL_KEY;
     ssl_protocols TLSv1.2 TLSv1.3;
-    ssl_session_cache shared:SSL:10m;
-    ssl_session_timeout 10m;
-    server_tokens off;
-
     root $WWW;
     index index.html;
-
-    location $HIDEPATH {
-        proxy_redirect off;
+    location $WS_PATH {
         proxy_pass http://127.0.0.1:10000;
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection "upgrade";
         proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_buffering off;
     }
-
-    location / { try_files \$uri \$uri/ =404; }
-    location ~ /\. { deny all; access_log off; log_not_found off; }
 }
 NGX
+  ln -sf "$NGX_CONF" /etc/nginx/sites-enabled/"$DOMAIN"
+  nginx -t && systemctl restart nginx
 
-ln -sf "$NGX_CONF" /etc/nginx/sites-enabled/"$DOMAIN"
-nginx -t
-systemctl restart nginx || { echo -e "${RED}nginx 启动失败${NC}"; exit 1; }
+  # VLESS 链接
+  WS_ESCAPED=$(python3 -c "import urllib.parse; print(urllib.parse.quote('$WS_PATH'))")
+  VLESS_URI="vless://${UUID}@${DOMAIN}:443?encryption=none&security=tls&sni=${DOMAIN}&type=ws&host=${DOMAIN}&path=${WS_ESCAPED}#${DOMAIN}"
 
-# URL encode HIDEPATH
-HIDEPATH_ESCAPED=$(python3 -c "import urllib.parse; print(urllib.parse.quote('$HIDEPATH', safe=''))")
-VLESS_URI="vless://${UUID}@${DOMAIN}:443?encryption=none&security=tls&sni=${DOMAIN}&type=ws&host=${DOMAIN}&path=${HIDEPATH_ESCAPED}#${DOMAIN}"
-
-cat > /root/vless-config.txt <<EOF
+  cat > "$CONFIG_FILE" <<EOF
 域名: $DOMAIN
 UUID: $UUID
-WebSocket 路径: $HIDEPATH
+WebSocket 路径: $WS_PATH
 证书: $SSL_CERT
 私钥: $SSL_KEY
-
 客户端链接:
 $VLESS_URI
 EOF
+  echo -e "${GREEN}安装完成！信息保存在 $CONFIG_FILE${NC}"
+  echo "$VLESS_URI"
+}
 
-echo -e "${GREEN}安装完成！配置信息已保存到 /root/vless-config.txt${NC}"
-echo "---- 客户端链接 ----"
-echo "$VLESS_URI"
-echo "---- 结束 ----"
+show_info() {
+  [ -f "$CONFIG_FILE" ] && cat "$CONFIG_FILE" || echo "未安装节点"
+}
+
+check_status() {
+  systemctl status xray --no-pager
+  systemctl status nginx --no-pager
+}
+
+check_cert() {
+  if [ ! -f "$CONFIG_FILE" ]; then echo "未安装节点"; return; fi
+  source <(grep -E "域名:|证书:" "$CONFIG_FILE" | sed 's/: /=/g')
+  if [ -f "$证书" ]; then
+    openssl x509 -noout -dates -in "$证书"
+  else
+    echo "证书不存在"
+  fi
+}
+
+delete_all() {
+  systemctl stop xray nginx || true
+  apt purge -y xray nginx certbot || true
+  rm -rf /usr/local/etc/xray /var/log/xray /etc/nginx /etc/letsencrypt /etc/ssl/*.crt /etc/ssl/*.key "$CONFIG_FILE"
+  echo -e "${RED}已删除所有配置${NC}"
+}
+
+enable_bbr() {
+  echo "net.core.default_qdisc=fq" >> /etc/sysctl.conf
+  echo "net.ipv4.tcp_congestion_control=bbr" >> /etc/sysctl.conf
+  sysctl -p
+  echo -e "${GREEN}BBR 已启用${NC}"
+}
+
+menu() {
+  clear
+  echo "==== VLESS 节点管理菜单 ===="
+  echo "1) 安装/重新安装节点"
+  echo "2) 查看节点信息"
+  echo "3) 查看 Xray / Nginx 状态"
+  echo "4) 查看证书状态"
+  echo "5) 删除所有配置"
+  echo "6) 开启 BBR 加速"
+  echo "0) 退出"
+  read -p "请选择 (0-6): " choice
+  case "$choice" in
+    1) install_node ;;
+    2) show_info ;;
+    3) check_status ;;
+    4) check_cert ;;
+    5) delete_all ;;
+    6) enable_bbr ;;
+    0) exit 0 ;;
+    *) echo "无效选项" ;;
+  esac
+}
+
+while true; do menu; read -p "按回车继续..." dummy; done
