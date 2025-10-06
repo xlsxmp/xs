@@ -1,21 +1,20 @@
 #!/usr/bin/env bash
 # =========================================================
-# ArgoSbx 精简版安装脚本（仅适配 Debian 12，中文固定）
+# ArgoSbx 精简增强版（仅适配 Debian 12，中文固定）
 # 保留功能：Argo + Sing-box + Nginx + VLESS
-# 删除：其他系统判断 / 多语言 / 统计次数 / reality/vmess/trojan
-# 作者原始项目: https://github.com/xlsxmp/ArgoSbx
-# 精简版：仅保留核心逻辑，简洁稳定
+# 删除：其他系统判断 / 多语言 / 统计 / reality/vmess/trojan
 # =========================================================
 
 set -e
 
-VERSION="Lite-2025.10.06"
+VERSION="LitePlus-2025.10.06"
 WORK_DIR="/etc/sba"
 TEMP_DIR="/tmp/sba"
 NGINX_CONF="/etc/nginx/conf.d/sba.conf"
 SINGBOX_BIN="${WORK_DIR}/sing-box"
 ARGO_BIN="${WORK_DIR}/cloudflared"
 UUID_FILE="${WORK_DIR}/uuid.txt"
+INFO_FILE="${WORK_DIR}/vless_info.txt"
 
 # ========================= 基础函数 =========================
 color_green(){ echo -e "\e[92m$1\e[0m"; }
@@ -26,18 +25,14 @@ info(){ color_green "[信息] $1"; }
 warn(){ color_yellow "[警告] $1"; }
 error(){ color_red "[错误] $1"; exit 1; }
 
-pause(){ read -rp "按回车继续..." _; }
-
 mkdir -p $WORK_DIR $TEMP_DIR
 
-# ========================= 检查系统环境 =========================
+# ========================= 检查环境 =========================
 check_root(){
     [[ $EUID -ne 0 ]] && error "请使用 root 用户执行此脚本！"
 }
 check_system(){
-    if ! grep -qi "debian" /etc/os-release; then
-        error "此版本仅适配 Debian 系统，请使用 Debian 12！"
-    fi
+    grep -qi "debian" /etc/os-release || error "此版本仅适配 Debian 12！"
 }
 check_arch(){
     ARCH=$(uname -m)
@@ -52,7 +47,7 @@ check_arch(){
 install_dependencies(){
     info "更新系统并安装依赖..."
     apt update -y
-    apt install -y wget curl tar nginx jq qrencode systemctl openssl
+    apt install -y wget curl tar nginx jq qrencode openssl
 }
 
 # ========================= 下载核心组件 =========================
@@ -72,33 +67,26 @@ download_files(){
 
 # ========================= 用户输入参数 =========================
 set_variables(){
-    info "请输入 Argo 配置模式："
+    info "请选择 Argo 模式："
     echo "1. 使用 Token"
     echo "2. 使用 JSON"
     echo "3. 临时隧道 (无需认证)"
     read -rp "请选择 [1-3]: " mode
     case $mode in
-        1)
-            read -rp "请输入你的 Argo Token: " ARGO_TOKEN
-            ;;
-        2)
-            read -rp "请输入你的 Argo JSON 内容（粘贴整段）: " ARGO_JSON
-            ;;
-        3)
-            info "使用临时隧道，无需认证。"
-            ;;
+        1) read -rp "请输入你的 Argo Token: " ARGO_TOKEN ;;
+        2) read -rp "请输入你的 Argo JSON 内容（整段）: " ARGO_JSON ;;
+        3) info "使用临时隧道，无需认证。" ;;
         *) error "无效选项！" ;;
     esac
 
-    read -rp "请输入你的 VLESS UUID（留空自动生成）: " UUID
+    read -rp "请输入 VLESS UUID（留空自动生成）: " UUID
     [[ -z $UUID ]] && UUID=$(cat /proc/sys/kernel/random/uuid)
     echo "$UUID" > $UUID_FILE
-    info "使用的 UUID: $UUID"
 
-    read -rp "请输入 WS 路径（例如：/chat）: " WS_PATH
+    read -rp "请输入 WS 路径（默认 /chat）: " WS_PATH
     [[ -z $WS_PATH ]] && WS_PATH="/chat"
 
-    read -rp "请输入域名（Argo 隧道绑定域名）: " DOMAIN
+    read -rp "请输入绑定域名（Argo 隧道使用）: " DOMAIN
     [[ -z $DOMAIN ]] && DOMAIN="example.com"
 }
 
@@ -117,7 +105,6 @@ cat > $WORK_DIR/config.json <<EOF
   "outbounds": [{"type": "direct"}]
 }
 EOF
-info "已生成 Sing-box 配置文件。"
 }
 
 generate_nginx_config(){
@@ -139,18 +126,17 @@ server {
     }
 }
 EOF
-info "已生成 Nginx 配置文件。"
 systemctl restart nginx
 }
 
 generate_cert(){
-    info "生成自签名证书..."
+    info "生成自签证书..."
     mkdir -p /etc/ssl/private /etc/ssl/certs
     openssl req -x509 -newkey rsa:2048 -nodes -keyout /etc/ssl/private/sba.key \
         -out /etc/ssl/certs/sba.crt -days 3650 -subj "/CN=$DOMAIN"
 }
 
-# ========================= Argo 隧道 =========================
+# ========================= Argo 隧道服务 =========================
 generate_argo_service(){
     cat > /etc/systemd/system/argo.service <<EOF
 [Unit]
@@ -167,7 +153,6 @@ EOF
 systemctl daemon-reload
 systemctl enable argo
 systemctl restart argo
-info "Argo 隧道服务已启动。"
 }
 
 # ========================= Sing-box 服务 =========================
@@ -186,11 +171,12 @@ EOF
 systemctl daemon-reload
 systemctl enable sing-box
 systemctl restart sing-box
-info "Sing-box 服务已启动。"
 }
 
-# ========================= 信息输出 =========================
+# ========================= 输出信息 =========================
 show_info(){
+VLESS_URL="vless://${UUID}@${DOMAIN}:443?encryption=none&type=ws&security=tls&host=${DOMAIN}&path=${WS_PATH}#Argo-VLESS"
+
 clear
 cat <<EOF
 ===========================================
@@ -201,17 +187,18 @@ VLESS 节点信息：
 地址：$DOMAIN
 端口：443
 UUID：$UUID
-加密：none
 传输协议：ws
 路径：$WS_PATH
 TLS：开启
+完整链接：
+$VLESS_URL
 -------------------------
-Argo 隧道已运行。
-Nginx 已启动。
 配置文件路径：$WORK_DIR/config.json
+节点信息已保存到：$INFO_FILE
 ===========================================
 EOF
-qrencode -t ANSIUTF8 "vless://${UUID}@${DOMAIN}:443?encryption=none&type=ws&security=tls&host=${DOMAIN}&path=${WS_PATH}#Argo-VLESS"
+echo "$VLESS_URL" > $INFO_FILE
+qrencode -t ANSIUTF8 "$VLESS_URL"
 }
 
 # ========================= 主执行逻辑 =========================
