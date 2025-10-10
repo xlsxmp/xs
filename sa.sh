@@ -10,7 +10,7 @@ SINGBOX_CONF=${SINGBOX_DIR}/config.json
 CLOUDFLARED_BIN=/usr/local/bin/cloudflared
 ARGO_SERVICE=/etc/systemd/system/argo.service
 SINGBOX_SERVICE=/etc/systemd/system/sing-box.service
-PORT=1270
+PORT=3270
 WS_PATH="/"
 
 install_base() {
