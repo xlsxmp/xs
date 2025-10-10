@@ -12,7 +12,7 @@ ARGO_SERVICE=/etc/systemd/system/argo.service
 SINGBOX_SERVICE=/etc/systemd/system/sing-box.service
 CDN=IP.SB
 PORT=3270
-WS_PATH="/"
+WS_PATH="/svwtca-051010"
 
 install_base() {
   apt update -y && apt install -y curl wget unzip jq
@@ -111,7 +111,7 @@ output_info() {
   echo "vless://${UUID}@${CDN}:443?encryption=none&security=tls&type=ws&host=${DOMAIN}&path=${WS_PATH}#VLESS-Argo-Singbox"
   echo "-----------------------------------------------"
   echo "UUID: ${UUID}"
-  echo "回源端口: 1270"
+  echo "回源端口: ${PORT}"
   echo "Argo 域名: ${DOMAIN}"
   echo "配置文件: ${SINGBOX_CONF}"
   echo "-----------------------------------------------"
