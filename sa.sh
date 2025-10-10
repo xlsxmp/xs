@@ -10,6 +10,7 @@ SINGBOX_CONF=${SINGBOX_DIR}/config.json
 CLOUDFLARED_BIN=/usr/local/bin/cloudflared
 ARGO_SERVICE=/etc/systemd/system/argo.service
 SINGBOX_SERVICE=/etc/systemd/system/sing-box.service
+CDN=IP.SB
 PORT=3270
 WS_PATH="/"
 
@@ -37,9 +38,8 @@ generate_singbox_config() {
       "listen": "127.0.0.1",
       "listen_port": ${PORT},
       "users": [
-        { "uuid": "${UUID}", "flow": "" }
+        { "uuid": "${UUID}" }
       ],
-      "decryption": "none",
       "transport": {
         "type": "ws",
         "path": "${WS_PATH}"
@@ -108,7 +108,7 @@ output_info() {
   echo "-----------------------------------------------"
   echo "VLESS 节点："
   echo
-  echo "vless://${UUID}@${DOMAIN}:443?encryption=none&security=tls&type=ws&host=${DOMAIN}&path=${WS_PATH}#VLESS-Argo-Singbox"
+  echo "vless://${UUID}@${CDN}:443?encryption=none&security=tls&type=ws&host=${DOMAIN}&path=${WS_PATH}#VLESS-Argo-Singbox"
   echo "-----------------------------------------------"
   echo "UUID: ${UUID}"
   echo "回源端口: 1270"
