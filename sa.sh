@@ -108,7 +108,7 @@ output_info() {
   echo "-----------------------------------------------"
   echo "VLESS 节点："
   echo
-  echo "vless://${UUID}@${CDN}:443?encryption=none&security=tls&type=ws&host=${DOMAIN}&path=${WS_PATH}#VLESS-Argo-Singbox"
+  echo "vless://${UUID}@${CDN}:443?encryption=none&security=tls&sni=${DOMAIN}&type=ws&host=${DOMAIN}&path=${WS_PATH}#VLESS-Argo-Singbox"
   echo "-----------------------------------------------"
   echo "UUID: ${UUID}"
   echo "回源端口: ${PORT}"
