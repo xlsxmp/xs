@@ -1,207 +1,125 @@
-#!/usr/bin/env bash
-# install_vless_xhttp.sh
-# Debian 12 适用：一键安装 Xray(VLESS+XHTTP+TLS) + nginx 反代 + TLS (Cloudflare Origin CA 或 Let’s Encrypt)
-set -euo pipefail
-IFS=$'\n\t'
+#!/bin/bash
+# ===========================================================
+# VLESS + XHTTP + TLS + Nginx + Cloudflare CDN 一键部署脚本
+# 适用于 Debian / Ubuntu
+# ===========================================================
 
-# 颜色
-RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'; NC='\033[0m'
+set -e
 
-# 必须 root
-if [ "$(id -u)" -ne 0 ]; then
-  echo -e "${RED}请以 root 运行脚本（sudo）${NC}" && exit 1
-fi
+echo -e "\n=== 🚀 VLESS + XHTTP + TLS + Nginx 安装脚本 ===\n"
 
-# 检查系统为 Debian 12
-if ! grep -q "VERSION_ID=\"12\"" /etc/os-release; then
-  echo -e "${YELLOW}警告：检测到非 Debian 12 系统，脚本在其它系统上可能不完全兼容。继续请按 Y。${NC}"
-  read -p "继续？ (y/N): " ok
-  case "$ok" in [yY]) ;; *) echo "退出"; exit 1 ;; esac
-fi
+# 🧩 基础变量
+read -p "请输入你的域名（已解析到当前服务器IP）: " DOMAIN
+read -p "请输入用于申请证书的邮箱地址: " EMAIL
 
-echo -e "${YELLOW}=== VLESS+XHTTP+TLS 一键安装（含 Cloudflare Origin CA 自动申请）===${NC}"
+UUID=$(cat /proc/sys/kernel/random/uuid)
+XRAY_PATH="/$(head -c 8 /dev/urandom | md5sum | cut -c1-8)"
+XRAY_CONF_DIR="/usr/local/etc/xray"
+NGINX_CONF_DIR="/etc/nginx/conf.d"
+WEB_ROOT="/var/www/html"
 
-# 输入参数
-read -p "请输入域名（例如 vps.example.com）: " DOMAIN
-[ -z "$DOMAIN" ] && echo -e "${RED}域名不能为空${NC}" && exit 1
+echo -e "\n🆔 生成的 UUID: $UUID"
+echo -e "🪶 随机路径: $XRAY_PATH"
+echo -e "🌐 域名: $DOMAIN"
+echo -e "\n⏳ 开始安装依赖...\n"
 
-read -p "请输入 XHTTP 路径（默认 /xhttp ）: " HIDEPATH
-HIDEPATH=${HIDEPATH:-/xhttp}
-[[ "${HIDEPATH:0:1}" != "/" ]] && HIDEPATH="/$HIDEPATH"
-
-read -p "请输入 UUID（回车自动生成）: " UUID
-[ -z "$UUID" ] && UUID=$(cat /proc/sys/kernel/random/uuid) && echo -e "${GREEN}已生成 UUID: $UUID${NC}"
-
-# 证书方式
-echo "证书方式:"
-echo "  1) Cloudflare Origin CA（自动通过 Cloudflare API 生成）"
-echo "  2) Let’s Encrypt (certbot, http 验证)"
-read -p "请选择 (1/2, 默认1): " CHOICE
-CHOICE=${CHOICE:-1}
-
-read -p "若要使用 Cloudflare API，请输入 CF API Token（回车跳过）: " CF_API_TOKEN
-if [ -z "$CF_API_TOKEN" ]; then
-  read -p "若无 Token，可输入 Cloudflare 邮箱 (回车跳过) : " CF_EMAIL
-  read -p "请输入 Cloudflare Global API Key (回车跳过) : " CF_GLOBAL_KEY
-fi
-
-# 更新系统并安装依赖
-echo -e "${YELLOW}更新系统并安装依赖...${NC}"
+# 📦 安装依赖
 apt update -y
-apt install -y curl wget unzip nginx jq ca-certificates socat python3 python3-pip ufw
+apt install -y nginx certbot python3-certbot-nginx curl socat unzip jq
 
-# 安装 certbot（按需）
-if [ "$CHOICE" = "2" ]; then
-  apt install -y snapd
-  snap install core && snap refresh core
-  snap install --classic certbot || true
-  ln -sf /snap/bin/certbot /usr/bin/certbot
-fi
-apt install -y python3-certbot-dns-cloudflare python3-certbot-nginx || true
+# ⚙️ 安装 Xray
+bash <(curl -Ls https://raw.githubusercontent.com/XTLS/Xray-install/main/install-release.sh) install
 
-# 安装 Xray
-echo -e "${YELLOW}安装 Xray...${NC}"
-bash <(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh) install || {
-  echo -e "${RED}Xray 安装失败${NC}"; exit 1;
-}
+# 🔐 申请 TLS 证书
+echo -e "\n🪪 申请 Let's Encrypt 证书..."
+certbot certonly --nginx -d "$DOMAIN" --non-interactive --agree-tos -m "$EMAIL"
 
-# 写入 Xray 配置
-XRAY_CONF="/usr/local/etc/xray/config.json"
-mkdir -p "$(dirname "$XRAY_CONF")"
-cat > "$XRAY_CONF" <<EOF
-{
-  "log": { "access": "/var/log/xray/access.log", "error": "/var/log/xray/error.log", "loglevel": "warning" },
-  "inbounds": [
-    {
-      "port": 10000,
-      "listen": "127.0.0.1",
-      "protocol": "vless",
-      "settings": { "clients": [ { "id": "$UUID", "level": 0 } ], "decryption": "none" },
-      "streamSettings": {
-        "network": "xhttp",
-        "xhttpSettings": {
-          "path": "$HIDEPATH",
-          "host": ["$DOMAIN"]
-        }
-      }
-    }
-  ],
-  "outbounds": [ { "protocol": "freedom" } ]
-}
-EOF
-
-systemctl enable --now xray
-systemctl restart xray
-
-# 证书路径
-SSL_DIR="/etc/nginx/ssl/$DOMAIN"
-mkdir -p "$SSL_DIR"
-SSL_CERT="$SSL_DIR/$DOMAIN.crt"
-SSL_KEY="$SSL_DIR/$DOMAIN.key"
-
-# 申请证书
-if [ "$CHOICE" = "1" ]; then
-  echo -e "${YELLOW}通过 Cloudflare API 申请 Origin CA 证书...${NC}"
-  if [ -n "${CF_API_TOKEN-}" ]; then
-    AUTH_HEADER="Authorization: Bearer $CF_API_TOKEN"
-    ZONE_ID=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones?name=$DOMAIN&status=active" -H "$AUTH_HEADER" -H "Content-Type: application/json" | jq -r '.result[0].id // empty')
-  else
-    APEX=$(echo "$DOMAIN" | awk -F. '{print $(NF-1)"."$NF}')
-    ZONE_ID=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones?name=$APEX&status=active" -H "X-Auth-Email: $CF_EMAIL" -H "X-Auth-Key: $CF_GLOBAL_KEY" -H "Content-Type: application/json" | jq -r '.result[0].id // empty')
-  fi
-  BODY=$(jq -n --arg hn "$DOMAIN" '{ "hostnames": [$hn], "request_type":"origin-rsa", "requested_validity":5475 }')
-  if [ -n "${CF_API_TOKEN-}" ]; then
-    RESP=$(curl -sS -X POST "https://api.cloudflare.com/client/v4/certificates" -H "$AUTH_HEADER" -H "Content-Type: application/json" --data "$BODY")
-  else
-    RESP=$(curl -sS -X POST "https://api.cloudflare.com/client/v4/certificates" -H "X-Auth-Email: $CF_EMAIL" -H "X-Auth-Key: $CF_GLOBAL_KEY" -H "Content-Type: application/json" --data "$BODY")
-  fi
-  CERT=$(echo "$RESP" | jq -r '.result.certificate')
-  KEY=$(echo "$RESP" | jq -r '.result.private_key')
-  echo "$CERT" > "$SSL_CERT"
-  echo "$KEY" > "$SSL_KEY"
-  chmod 600 "$SSL_KEY"
-else
-  echo -e "${YELLOW}使用 Let’s Encrypt 申请证书...${NC}"
-  certbot -n --nginx -d "$DOMAIN" --agree-tos --email "admin@$DOMAIN"
-  SSL_CERT="/etc/letsencrypt/live/$DOMAIN/fullchain.pem"
-  SSL_KEY="/etc/letsencrypt/live/$DOMAIN/privkey.pem"
-  systemctl enable certbot.timer
-  systemctl start certbot.timer
-fi
-
-# 创建伪装网页
-WWW="/var/www/html"
-mkdir -p "$WWW"
-cat > "$WWW/index.html" <<HTML
-<!doctype html>
-<html>
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Welcome</title></head>
-<body style="font-family:Arial,Helvetica,sans-serif;padding:40px;">
-<h1>Welcome to $DOMAIN</h1><p>This is a static page.</p></body>
-</html>
-HTML
-chown -R www-data:www-data "$WWW"
-chmod -R 755 "$WWW"
-
-# Nginx 配置
-NGX_CONF="/etc/nginx/sites-available/$DOMAIN"
-cat > "$NGX_CONF" <<NGX
-server {
-    listen 80;
-    server_name $DOMAIN;
-    location /.well-known/acme-challenge/ { root $WWW; }
-    location / { return 301 https://\$host\$request_uri; }
-}
-
+# 🧱 创建 Nginx 配置
+cat > $NGINX_CONF_DIR/xhttp.conf <<EOF
 server {
     listen 443 ssl http2;
     server_name $DOMAIN;
 
-    ssl_certificate $SSL_CERT;
-    ssl_certificate_key $SSL_KEY;
-    ssl_protocols TLSv1.2 TLSv1.3;
-    ssl_session_cache shared:SSL:10m;
-    ssl_session_timeout 10m;
-    server_tokens off;
+    ssl_certificate     /etc/letsencrypt/live/$DOMAIN/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/$DOMAIN/privkey.pem;
 
-    root $WWW;
+    root $WEB_ROOT;
     index index.html;
 
-    location $HIDEPATH {
-        proxy_pass http://127.0.0.1:10000;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+    # XHTTP 转发
+    location $XRAY_PATH {
+        proxy_redirect off;
+        proxy_pass http://unix:/dev/shm/xhttp.sock;
         proxy_http_version 1.1;
-        proxy_buffering off;
+        proxy_set_header Host \$host;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
     }
-
-    location / { try_files \$uri \$uri/ =404; }
-    location ~ /\. { deny all; access_log off; log_not_found off; }
 }
-NGX
-
-ln -sf "$NGX_CONF" /etc/nginx/sites-enabled/"$DOMAIN"
-nginx -t
-systemctl restart nginx
-
-# URL encode HIDEPATH
-HIDEPATH_ESCAPED=$(python3 -c "import urllib.parse; print(urllib.parse.quote('$HIDEPATH', safe='/'))")
-VLESS_URI="vless://${UUID}@${DOMAIN}:443?encryption=none&security=tls&sni=${DOMAIN}&type=xhttp&host=${DOMAIN}&path=${HIDEPATH_ESCAPED}#${DOMAIN}"
-
-cat > /root/vless-config.txt <<EOF
-域名: $DOMAIN
-UUID: $UUID
-XHTTP 路径: $HIDEPATH
-证书: $SSL_CERT
-私钥: $SSL_KEY
-
-客户端链接:
-$VLESS_URI
 EOF
 
-echo -e "${GREEN}安装完成！配置信息已保存到 /root/vless-config.txt${NC}"
-echo "---- 客户端链接 ----"
-echo "$VLESS_URI"
-echo "---- 结束 ----"
+# 🧠 创建 Xray 配置
+mkdir -p $XRAY_CONF_DIR
+
+cat > $XRAY_CONF_DIR/config.json <<EOF
+{
+  "log": {
+    "access": "/var/log/xray/access.log",
+    "error": "/var/log/xray/error.log",
+    "loglevel": "warning"
+  },
+  "inbounds": [
+    {
+      "listen": "/dev/shm/xhttp.sock,0666",
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          { "id": "$UUID", "flow": "" }
+        ],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "xhttp",
+        "xhttpSettings": {
+          "path": "$XRAY_PATH",
+          "host": ["$DOMAIN"],
+          "mode": "auto"
+        }
+      }
+    }
+  ],
+  "outbounds": [
+    { "protocol": "freedom" }
+  ]
+}
+EOF
+
+# 🚀 启动服务
+systemctl enable xray
+systemctl restart xray
+systemctl restart nginx
+
+# 🌐 节点信息
+VLESS_LINK="vless://${UUID}@${DOMAIN}:443?encryption=none&security=tls&type=xhttp&path=${XRAY_PATH}&host=${DOMAIN}#VLESS-XHTTP-TLS-CDN"
+
+# 💾 保存节点信息
+cat > /root/vless_info.txt <<EOF
+==============================
+ VLESS + XHTTP + TLS + Nginx
+==============================
+域名: $DOMAIN
+UUID: $UUID
+路径: $XRAY_PATH
+端口: 443
+证书: /etc/letsencrypt/live/$DOMAIN/
+节点链接:
+$VLESS_LINK
+==============================
+说明: 
+✅ Cloudflare CDN 可直接开启橙云加速
+✅ 浏览器访问 https://$DOMAIN 可看到伪装网站
+EOF
+
+clear
+echo -e "\n✅ 安装完成！节点信息如下：\n"
+cat /root/vless_info.txt
