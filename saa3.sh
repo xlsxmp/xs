@@ -75,9 +75,9 @@ install_cloudflared() {
 }
 
 setup_argo_token() {
-  echo "🔹 请输入你的 Cloudflare Argo Token："
+  echo -e "{RED}🔹 请输入你的 Cloudflare Argo Token：${NC}"
   read -rp "Argo Token: " ARGO_TOKEN
-  echo "🔹 请输入 Argo 隧道绑定域名 (例如 argo.example.com)："
+  echo -e "{RED}🔹 请输入 Argo 隧道绑定域名 (例如 argo.example.com)：${NC}"
   read -rp "Argo 域名: " DOMAIN
 
   cat > ${ARGO_SERVICE} <<EOF
