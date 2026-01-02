@@ -173,7 +173,7 @@ echo " VLESS + XHTTP + TLS + CF CDN 已部署"
 echo "---------------------------------------"
 ENCODED_PATH=${PATH_ID#*/}
 echo "节点信息如下："
-echo "vless://$UUID@ip.sb:443?type=xhttp&host=${DOMAIN}&security=tls&path=%2F${ENCODED_PATH}&mode=packet-up&sni=$DOMAIN&alpn=h3%2Ch2fp=Chrome#VLESS-XHTTP-TLS"
+echo "vless://$UUID@ip.sb:443?type=xhttp&host=${DOMAIN}&security=tls&path=%2F${ENCODED_PATH}&mode=auto&sni=$DOMAIN&alpn=h3%2Ch2fp=Chrome#VLESS-XHTTP-TLS"
 echo ""
 echo "📜 证书路径: $SSL_CERT"
 echo "🔑 私钥路径: $SSL_KEY"
