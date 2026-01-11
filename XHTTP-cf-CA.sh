@@ -124,7 +124,7 @@ cat > /etc/xray/config.json <<EOF
           ]
         },
         "xhttpSettings": {
-          "path": "$PATH_ID"，
+          "path": "$PATH_ID",
           "mode": "packet-up"
         }
       }
