@@ -89,7 +89,7 @@ rm /tmp/xray.zip
 
 # 🧠 生成 UUID 和路径
 UUID=$(xray uuid)
-PATH_ID="/$(head -c 8 /dev/urandom | md5sum | cut -c1-6)"
+PATH_ID="/$(head -c 16 /dev/urandom | md5sum | cut -c1-12)"
 
 # 📝 写入配置文件
 cat > /etc/xray/config.json <<EOF
