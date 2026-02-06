@@ -13,7 +13,7 @@ SINGBOX_SERVICE=/etc/systemd/system/sing-box.service
 CDN=IP.SB
 PORT=3270
 # 随机生成 WS 路径
-WS_PATH="/$(head -c 16 /dev/urandom | md5sum | cut -c1-8)"
+WS_PATH="/$(head -c 16 /dev/urandom | md5sum | cut -c1-12)"
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'; NC='\033[0m'
 
 install_base() {
