@@ -1,8 +1,8 @@
 #!/bin/sh
 
 # ================================
-#  Alpine: VLESS + WS + Argo + Sing-box
-#  后台运行 + OpenRC 自启 + 节点信息写入
+#  Alpine 最终安全版：VLESS + WS + Argo + Sing-box
+#  后台运行 + 防风暴 + 自动检测 + BBR3
 # ================================
 
 set -u
@@ -17,6 +17,9 @@ UUID=$(cat /proc/sys/kernel/random/uuid)
 PORT=3270
 WS_PATH="/ws-$(date +%H%M%S)"
 
+# ---------------------------
+# 基础检查
+# ---------------------------
 check_root() {
     if [ "$(id -u)" -ne 0 ]; then
         echo "请使用 root 运行"
@@ -92,7 +95,7 @@ EOF
 }
 
 # ---------------------------
-# OpenRC 服务（后台运行）
+# OpenRC 服务（后台运行 + 防风暴）
 # ---------------------------
 install_singbox_service() {
     cat > /etc/init.d/sing-box <<EOF
@@ -101,6 +104,10 @@ command="${SINGBOX_BIN}"
 command_args="run -c ${SINGBOX_CONF}"
 command_background="yes"
 pidfile="/var/run/sing-box.pid"
+
+depend() {
+    need net
+}
 EOF
 
     chmod +x /etc/init.d/sing-box
@@ -125,7 +132,7 @@ install_cloudflared() {
 }
 
 # ---------------------------
-# Argo（后台运行）
+# Argo 服务（后台运行 + 防风暴）
 # ---------------------------
 setup_argo() {
     echo "请输入 Cloudflare Argo Token："
@@ -140,6 +147,10 @@ command="${CLOUDFLARED_BIN}"
 command_args="tunnel run --token ${ARGO_TOKEN}"
 command_background="yes"
 pidfile="/var/run/argo.pid"
+
+depend() {
+    need net sing-box
+}
 EOF
 
     chmod +x /etc/init.d/argo
@@ -157,6 +168,18 @@ EOF
   "created_at": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 }
 EOF
+}
+
+# ---------------------------
+# 自动开启 BBR3（你的内核支持）
+# ---------------------------
+enable_bbr3() {
+    mkdir -p /etc/sysctl.d
+    cat > /etc/sysctl.d/99-bbr.conf <<EOF
+net.core.default_qdisc=fq
+net.ipv4.tcp_congestion_control=bbr3
+EOF
+    sysctl --system >/dev/null 2>&1
 }
 
 # ---------------------------
@@ -183,4 +206,5 @@ generate_singbox_config
 install_singbox_service
 install_cloudflared
 setup_argo
+enable_bbr3
 show_info
