@@ -1,7 +1,7 @@
 #!/bin/sh
 # ==============================================
 # 企业级 Xray + Cloudflare Argo 安装脚本
-# 支持 Alpine VPS
+# 支持 Alpine VPS，自动架构判断
 # ==============================================
 
 # ==============================
@@ -19,7 +19,7 @@ error() { echo -e "${RED}$1${NC}"; exit 1; }
 set -e
 
 # ==============================
-# 0. 工具函数
+# 工具函数
 # ==============================
 retry_download() {
     URL="$1"
@@ -191,8 +191,15 @@ success "Xray 服务启动成功"
 # ==============================
 # 7. 安装 cloudflared
 # ==============================
+case "$ARCH" in
+    x86_64) CF_ARCH="cloudflared-linux-amd64" ;;
+    aarch64|arm64) CF_ARCH="cloudflared-linux-arm64" ;;
+    armv7*) CF_ARCH="cloudflared-linux-arm" ;;
+    *) error "不支持的架构: $ARCH" ;;
+esac
+
 TMP_CF="/tmp/cloudflared"
-retry_download "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64" "$TMP_CF"
+retry_download "https://github.com/cloudflare/cloudflared/releases/latest/download/$CF_ARCH" "$TMP_CF"
 mv "$TMP_CF" /usr/local/bin/cloudflared
 chmod +x /usr/local/bin/cloudflared
 
@@ -226,12 +233,11 @@ success "cloudflared 服务启动成功"
 INFO_FILE="/root/xray_nodes.txt"
 cat > "$INFO_FILE" <<EOF
 ===========================================
-🎉 Alpine 企业版 Xray + Argo 部署完成！
+🎉 Alpine 企业级 Xray + Argo 部署完成！
 ===========================================
 
 UUID: $UUID
 
--------------------------------------------
 节点 1：VLESS + XHTTP + Cloudflare CDN
 vless://$UUID@$CDN_DOMAIN:443?encryption=none&security=tls&type=xhttp&path=$XHTTP_PATH&mode=auto&sni=$CDN_DOMAIN#VLESS-XHTTP-CF
 
