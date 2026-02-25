@@ -125,7 +125,7 @@ cat > /etc/init.d/cloudflared <<EOF
 #!/sbin/openrc-run
 description="Cloudflared Argo Tunnel"
 command="/usr/local/bin/cloudflared"
-command_args="tunnel --no-autoupdate run --token \$(cat /root/.cloudflared/token)"
+command_args="tunnel --no-autoupdate --ha-connections 1 --protocol http2 --loglevel error --edge-ip-version 4  run --token-file /root/.cloudflared/token"
 command_background=true
 pidfile="/run/cloudflared.pid"
 depend() {
