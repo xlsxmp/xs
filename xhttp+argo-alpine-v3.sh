@@ -1,7 +1,7 @@
 #!/bin/sh
 # ==============================================
 # 企业级 Xray + Cloudflare Argo 安装脚本
-# 支持 Alpine VPS，自动架构判断
+# 支持 Alpine VPS
 # ==============================================
 
 # ==============================
@@ -19,7 +19,7 @@ error() { echo -e "${RED}$1${NC}"; exit 1; }
 set -e
 
 # ==============================
-# 工具函数
+# 0. 工具函数
 # ==============================
 retry_download() {
     URL="$1"
@@ -45,11 +45,30 @@ validate_domain() {
     fi
 }
 
+# ==============================
+# 🔥 新版 token 校验（只改这里）
+# ==============================
 validate_token() {
     TOKEN="$1"
-    if ! echo "$TOKEN" | grep -Eq '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'; then
-        error "Cloudflare Tunnel Token 格式不正确"
+
+    # 非空
+    [ -z "$TOKEN" ] && error "Cloudflare Tunnel Token 不能为空"
+
+    # 不包含空白字符
+    echo "$TOKEN" | grep -q '[[:space:]]' && error "Token 中不能包含空格或换行"
+
+    # 长度合理
+    LEN=${#TOKEN}
+    if [ "$LEN" -lt 20 ] || [ "$LEN" -gt 2000 ]; then
+        error "Token 长度异常（当前 $LEN），请检查是否复制完整"
     fi
+
+    # Base64URL 字符集宽松检查
+    echo "$TOKEN" | grep -Eq '^[A-Za-z0-9._=-]+$' || {
+        info "警告：Token 含有非典型字符，但继续尝试，由 cloudflared 负责最终校验"
+    }
+
+    return 0
 }
 
 check_port() {
@@ -70,7 +89,7 @@ info "请输入你的 Argo 域名（Zero Trust Public Hostname）:"
 read -r ARGO_DOMAIN
 validate_domain "$ARGO_DOMAIN"
 
-info "请输入你的 Cloudflare Tunnel Token (UUID 格式):"
+info "请输入你的 Cloudflare Tunnel Token :"
 read -r ARGO_TOKEN
 validate_token "$ARGO_TOKEN"
 
@@ -191,15 +210,8 @@ success "Xray 服务启动成功"
 # ==============================
 # 7. 安装 cloudflared
 # ==============================
-case "$ARCH" in
-    x86_64) CF_ARCH="cloudflared-linux-amd64" ;;
-    aarch64|arm64) CF_ARCH="cloudflared-linux-arm64" ;;
-    armv7*) CF_ARCH="cloudflared-linux-arm" ;;
-    *) error "不支持的架构: $ARCH" ;;
-esac
-
 TMP_CF="/tmp/cloudflared"
-retry_download "https://github.com/cloudflare/cloudflared/releases/latest/download/$CF_ARCH" "$TMP_CF"
+retry_download "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64" "$TMP_CF"
 mv "$TMP_CF" /usr/local/bin/cloudflared
 chmod +x /usr/local/bin/cloudflared
 
@@ -233,11 +245,12 @@ success "cloudflared 服务启动成功"
 INFO_FILE="/root/xray_nodes.txt"
 cat > "$INFO_FILE" <<EOF
 ===========================================
-🎉 Alpine 企业级 Xray + Argo 部署完成！
+🎉 Alpine 企业版 Xray + Argo 部署完成！
 ===========================================
 
 UUID: $UUID
 
+-------------------------------------------
 节点 1：VLESS + XHTTP + Cloudflare CDN
 vless://$UUID@$CDN_DOMAIN:443?encryption=none&security=tls&type=xhttp&path=$XHTTP_PATH&mode=auto&sni=$CDN_DOMAIN#VLESS-XHTTP-CF
 
